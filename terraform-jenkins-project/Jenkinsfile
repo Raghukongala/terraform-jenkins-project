@@ -3,7 +3,7 @@ pipeline {
 
     parameters {
         choice(name: 'ENV',         choices: ['dev', 'staging', 'prod'], description: 'Target environment')
-        choice(name: 'ACTION',      choices: ['plan', 'apply', 'destroy'],  description: 'Terraform action')
+        choice(name: 'ACTION',      choices: ['plan', 'apply', 'destroy', 'deploy'], description: 'Terraform action or deploy app')
         booleanParam(name: 'AUTO_APPROVE', defaultValue: false, description: 'Skip manual approval (non-prod only)')
     }
 
@@ -12,6 +12,10 @@ pipeline {
         TF_DIR           = "terraform-jenkins-project/envs/${params.ENV}"
         TF_IN_AUTOMATION = 'true'
         TF_CLI_ARGS      = '-no-color'
+        AWS_REGION       = 'ap-south-1'
+        AWS_ACCOUNT_ID   = '957948932374'
+        ECR_REPO         = "myapp-${params.ENV}-app"
+        IMAGE_TAG        = "${BUILD_NUMBER}"
     }
 
     options {
@@ -29,9 +33,10 @@ pipeline {
         }
 
         stage('Terraform Init') {
+            when { expression { params.ACTION != 'deploy' } }
             steps {
                 withCredentials([
-                    string(credentialsId: 'Accesskey',        variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
                     string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY')
                 ]) {
                     dir("${TF_DIR}") {
@@ -42,11 +47,12 @@ pipeline {
         }
 
         stage('Validate & Lint') {
+            when { expression { params.ACTION != 'deploy' } }
             parallel {
                 stage('Validate') {
                     steps {
                         withCredentials([
-                            string(credentialsId: 'Accesskey',        variable: 'AWS_ACCESS_KEY_ID'),
+                            string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
                             string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY')
                         ]) {
                             dir("${TF_DIR}") {
@@ -73,6 +79,7 @@ pipeline {
         }
 
         stage('Terraform Plan') {
+            when { expression { params.ACTION in ['plan', 'apply'] } }
             steps {
                 withCredentials([
                     string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
@@ -106,21 +113,13 @@ pipeline {
             }
             steps {
                 script {
-                    def planOutput = readFile("${TF_DIR}/tfplan.txt")
-                    input message: """
-                        Approve Terraform ${params.ACTION.toUpperCase()} on *${params.ENV}*?
-
-                        Plan Summary:
-                        ${planOutput.take(3000)}
-                    """, ok: 'Approve'
+                    input message: "Approve Terraform ${params.ACTION.toUpperCase()} on ${params.ENV}?", ok: 'Approve'
                 }
             }
         }
 
         stage('Terraform Apply') {
-            when {
-                expression { params.ACTION == 'apply' }
-            }
+            when { expression { params.ACTION == 'apply' } }
             steps {
                 withCredentials([
                     string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
@@ -138,9 +137,7 @@ pipeline {
         }
 
         stage('Terraform Destroy') {
-            when {
-                expression { params.ACTION == 'destroy' }
-            }
+            when { expression { params.ACTION == 'destroy' } }
             steps {
                 withCredentials([
                     string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
@@ -157,13 +154,62 @@ pipeline {
             }
         }
 
-        stage('Output') {
-            when {
-                expression { params.ACTION == 'apply' }
+        stage('Docker Build') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                dir('terraform-jenkins-project/app') {
+                    sh "docker build -t ${ECR_REPO}:${IMAGE_TAG} ."
+                }
             }
+        }
+
+        stage('Push to ECR') {
+            when { expression { params.ACTION == 'deploy' } }
             steps {
                 withCredentials([
-                    string(credentialsId: 'Accesskey',        variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    sh """
+                        export AWS_DEFAULT_REGION=${AWS_REGION}
+                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                        docker tag ${ECR_REPO}:${IMAGE_TAG} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+                        docker tag ${ECR_REPO}:${IMAGE_TAG} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest
+                        docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+                        docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to ECS') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                withCredentials([
+                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    sh """
+                        export AWS_DEFAULT_REGION=${AWS_REGION}
+                        aws ecs update-service \
+                          --cluster myapp-${params.ENV}-cluster \
+                          --service myapp-${params.ENV}-service \
+                          --force-new-deployment \
+                          --region ${AWS_REGION}
+                        aws ecs wait services-stable \
+                          --cluster myapp-${params.ENV}-cluster \
+                          --services myapp-${params.ENV}-service \
+                          --region ${AWS_REGION}
+                    """
+                }
+            }
+        }
+
+        stage('Output') {
+            when { expression { params.ACTION == 'apply' } }
+            steps {
+                withCredentials([
+                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
                     string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY')
                 ]) {
                     dir("${TF_DIR}") {
@@ -187,7 +233,6 @@ pipeline {
         }
         failure {
             echo "Pipeline FAILED for ${params.ENV} - ${params.ACTION}"
-            // Add Slack/email notification here
         }
     }
 }

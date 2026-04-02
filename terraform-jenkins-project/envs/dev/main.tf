@@ -39,6 +39,38 @@ module "vpc" {
   tags               = local.common_tags
 }
 
+module "ecr" {
+  source = "../../modules/ecr"
+  name   = "${local.name}-app"
+  tags   = local.common_tags
+}
+
+module "alb" {
+  source            = "../../modules/alb"
+  name              = local.name
+  vpc_id            = module.vpc.vpc_id
+  public_subnet_ids = module.vpc.public_subnet_ids
+  app_port          = 8080
+  tags              = local.common_tags
+}
+
+module "ecs" {
+  source           = "../../modules/ecs"
+  name             = local.name
+  vpc_id           = module.vpc.vpc_id
+  subnet_ids       = module.vpc.private_subnet_ids
+  alb_sg_id        = module.alb.alb_sg_id
+  target_group_arn = module.alb.target_group_arn
+  image_uri        = "${module.ecr.repository_url}:latest"
+  app_port         = 8080
+  cpu              = 256
+  memory           = 512
+  desired_count    = 1
+  app_env          = local.env
+  aws_region       = var.aws_region
+  tags             = local.common_tags
+}
+
 module "s3_assets" {
   source        = "../../modules/s3"
   bucket_name   = "${local.name}-assets-${data.aws_caller_identity.current.account_id}"
@@ -52,7 +84,7 @@ module "rds" {
   name                = local.name
   vpc_id              = module.vpc.vpc_id
   subnet_ids          = module.vpc.private_subnet_ids
-  app_sg_ids          = [module.ec2.ec2_sg_id]
+  app_sg_ids          = [module.ecs.ecs_sg_id]
   db_name             = var.db_name
   db_username         = var.db_username
   db_password         = var.db_password
