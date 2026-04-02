@@ -81,6 +81,8 @@ pipeline {
                 ]) {
                     dir("${TF_DIR}") {
                         sh """
+                            pwd
+                            ls -la
                             export AWS_DEFAULT_REGION=ap-south-1
                             terraform plan \\
                               -var-file="terraform.tfvars" \\
