@@ -1,0 +1,173 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'ENV',         choices: ['dev', 'staging', 'prod'], description: 'Target environment')
+        choice(name: 'ACTION',      choices: ['plan', 'apply', 'destroy'],  description: 'Terraform action')
+        booleanParam(name: 'AUTO_APPROVE', defaultValue: false, description: 'Skip manual approval (non-prod only)')
+    }
+
+    environment {
+        AWS_CREDENTIALS_ID = 'aws-credentials'          // Jenkins credential ID
+        TF_VERSION         = '1.7.5'
+        TF_DIR             = "envs/${params.ENV}"
+        TF_IN_AUTOMATION   = 'true'
+        TF_CLI_ARGS        = '-no-color'
+    }
+
+    options {
+        ansiColor('xterm')
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                withAWS(credentials: "${AWS_CREDENTIALS_ID}", region: 'ap-south-1') {
+                    dir("${TF_DIR}") {
+                        sh 'terraform init -reconfigure'
+                    }
+                }
+            }
+        }
+
+        stage('Validate & Lint') {
+            parallel {
+                stage('Validate') {
+                    steps {
+                        withAWS(credentials: "${AWS_CREDENTIALS_ID}", region: 'ap-south-1') {
+                            dir("${TF_DIR}") {
+                                sh 'terraform validate'
+                            }
+                        }
+                    }
+                }
+                stage('TFLint') {
+                    steps {
+                        dir("${TF_DIR}") {
+                            sh 'tflint --init && tflint'
+                        }
+                    }
+                }
+                stage('Checkov Security Scan') {
+                    steps {
+                        dir("${TF_DIR}") {
+                            sh 'checkov -d . --framework terraform --output junitxml > checkov-report.xml || true'
+                        }
+                    }
+                    post {
+                        always {
+                            junit allowEmptyResults: true, testResults: "${TF_DIR}/checkov-report.xml"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                withAWS(credentials: "${AWS_CREDENTIALS_ID}", region: 'ap-south-1') {
+                    dir("${TF_DIR}") {
+                        sh """
+                            bash ../../scripts/inject-secrets.sh ${params.ENV}
+                            terraform plan \
+                              -var-file="terraform.tfvars" \
+                              -out=tfplan \
+                              -detailed-exitcode || true
+                        """
+                        sh 'terraform show -no-color tfplan > tfplan.txt'
+                        archiveArtifacts artifacts: 'tfplan.txt', fingerprint: true
+                    }
+                }
+            }
+        }
+
+        stage('Approval') {
+            when {
+                allOf {
+                    expression { params.ACTION in ['apply', 'destroy'] }
+                    anyOf {
+                        expression { params.ENV == 'prod' }
+                        expression { !params.AUTO_APPROVE }
+                    }
+                }
+            }
+            steps {
+                script {
+                    def planOutput = readFile("${TF_DIR}/tfplan.txt")
+                    input message: """
+                        Approve Terraform ${params.ACTION.toUpperCase()} on *${params.ENV}*?
+
+                        Plan Summary:
+                        ${planOutput.take(3000)}
+                    """, ok: 'Approve'
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                withAWS(credentials: "${AWS_CREDENTIALS_ID}", region: 'ap-south-1') {
+                    dir("${TF_DIR}") {
+                        sh 'terraform apply -auto-approve tfplan'
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                withAWS(credentials: "${AWS_CREDENTIALS_ID}", region: 'ap-south-1') {
+                    dir("${TF_DIR}") {
+                        sh """
+                            bash ../../scripts/inject-secrets.sh ${params.ENV}
+                            terraform destroy -auto-approve -var-file="terraform.tfvars"
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Output') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                withAWS(credentials: "${AWS_CREDENTIALS_ID}", region: 'ap-south-1') {
+                    dir("${TF_DIR}") {
+                        sh 'terraform output -json > tf-outputs.json'
+                        archiveArtifacts artifacts: 'tf-outputs.json', fingerprint: true
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            echo "Pipeline completed successfully for ${params.ENV} - ${params.ACTION}"
+        }
+        failure {
+            echo "Pipeline FAILED for ${params.ENV} - ${params.ACTION}"
+            // Add Slack/email notification here
+        }
+    }
+}
