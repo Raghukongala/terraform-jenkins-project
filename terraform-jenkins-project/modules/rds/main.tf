@@ -28,15 +28,15 @@ resource "aws_db_subnet_group" "this" {
 }
 
 resource "aws_db_parameter_group" "this" {
-  name   = "${var.name}-pg15"
-  family = "postgres15"
+  name   = "${var.name}-pg16"
+  family = "postgres16"
   tags   = var.tags
 }
 
 resource "aws_db_instance" "this" {
   identifier              = "${var.name}-db"
   engine                  = "postgres"
-  engine_version          = "15.4"
+  engine_version          = "16.3"
   instance_class          = var.instance_class
   allocated_storage       = var.allocated_storage
   max_allocated_storage   = var.allocated_storage * 2
