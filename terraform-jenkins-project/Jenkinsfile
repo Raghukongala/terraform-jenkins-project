@@ -85,7 +85,7 @@ pipeline {
                             terraform plan \\
                               -var-file="terraform.tfvars" \\
                               -out=tfplan \\
-                              -detailed-exitcode
+                              -detailed-exitcode || [ \$? -eq 2 ]
                         """
                         sh 'terraform show -no-color tfplan > tfplan.txt'
                         archiveArtifacts artifacts: 'tfplan.txt', fingerprint: true
