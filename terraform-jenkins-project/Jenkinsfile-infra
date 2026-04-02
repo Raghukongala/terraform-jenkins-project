@@ -1,0 +1,166 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'ENV',    choices: ['dev', 'staging', 'prod'], description: 'Target environment')
+        choice(name: 'ACTION', choices: ['plan', 'apply', 'destroy'], description: 'Terraform action')
+        booleanParam(name: 'AUTO_APPROVE', defaultValue: false, description: 'Skip manual approval')
+    }
+
+    environment {
+        TF_DIR           = "terraform-jenkins-project/envs/${params.ENV}"
+        TF_IN_AUTOMATION = 'true'
+        TF_CLI_ARGS      = '-no-color'
+    }
+
+    options {
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    dir("${TF_DIR}") {
+                        sh 'terraform init -reconfigure'
+                    }
+                }
+            }
+        }
+
+        stage('Validate & Lint') {
+            parallel {
+                stage('Validate') {
+                    steps {
+                        withCredentials([
+                            string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
+                            string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY')
+                        ]) {
+                            dir("${TF_DIR}") { sh 'terraform validate' }
+                        }
+                    }
+                }
+                stage('TFLint') {
+                    steps {
+                        dir("${TF_DIR}") { sh 'tflint --init && tflint || true' }
+                    }
+                }
+                stage('Checkov') {
+                    steps {
+                        dir("${TF_DIR}") { sh 'checkov -d . --framework terraform || true' }
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            when { expression { params.ACTION in ['plan', 'apply'] } }
+            steps {
+                withCredentials([
+                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                    string(credentialsId: 'db-password',       variable: 'TF_VAR_db_password')
+                ]) {
+                    dir("${TF_DIR}") {
+                        sh """
+                            export AWS_DEFAULT_REGION=ap-south-1
+                            terraform plan \\
+                              -var-file="terraform.tfvars" \\
+                              -out=tfplan \\
+                              -detailed-exitcode || [ \$? -eq 2 ]
+                        """
+                        sh 'terraform show -no-color tfplan > tfplan.txt'
+                        archiveArtifacts artifacts: 'tfplan.txt', fingerprint: true
+                    }
+                }
+            }
+        }
+
+        stage('Approval') {
+            when {
+                allOf {
+                    expression { params.ACTION in ['apply', 'destroy'] }
+                    anyOf {
+                        expression { params.ENV == 'prod' }
+                        expression { !params.AUTO_APPROVE }
+                    }
+                }
+            }
+            steps {
+                script {
+                    input message: "Approve Terraform ${params.ACTION.toUpperCase()} on ${params.ENV}?", ok: 'Approve'
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            when { expression { params.ACTION == 'apply' } }
+            steps {
+                withCredentials([
+                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                    string(credentialsId: 'db-password',       variable: 'TF_VAR_db_password')
+                ]) {
+                    dir("${TF_DIR}") {
+                        sh '''
+                            export AWS_DEFAULT_REGION=ap-south-1
+                            terraform apply -auto-approve tfplan
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Destroy') {
+            when { expression { params.ACTION == 'destroy' } }
+            steps {
+                withCredentials([
+                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                    string(credentialsId: 'db-password',       variable: 'TF_VAR_db_password')
+                ]) {
+                    dir("${TF_DIR}") {
+                        sh """
+                            export AWS_DEFAULT_REGION=ap-south-1
+                            terraform destroy -auto-approve -var-file=\"terraform.tfvars\"
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Output') {
+            when { expression { params.ACTION == 'apply' } }
+            steps {
+                withCredentials([
+                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    dir("${TF_DIR}") {
+                        sh '''
+                            export AWS_DEFAULT_REGION=ap-south-1
+                            terraform output -json > tf-outputs.json
+                        '''
+                        archiveArtifacts artifacts: 'tf-outputs.json', fingerprint: true
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always { cleanWs() }
+        success { echo "Infra pipeline completed: ${params.ENV} - ${params.ACTION}" }
+        failure { echo "Infra pipeline FAILED: ${params.ENV} - ${params.ACTION}" }
+    }
+}

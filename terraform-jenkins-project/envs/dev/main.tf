@@ -58,7 +58,7 @@ module "ecs" {
   source           = "../../modules/ecs"
   name             = local.name
   vpc_id           = module.vpc.vpc_id
-  subnet_ids       = module.vpc.private_subnet_ids
+  subnet_ids       = module.vpc.public_subnet_ids
   alb_sg_id        = module.alb.alb_sg_id
   target_group_arn = module.alb.target_group_arn
   image_uri        = "${module.ecr.repository_url}:latest"
