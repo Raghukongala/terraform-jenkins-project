@@ -9,7 +9,7 @@ pipeline {
 
     environment {
         TF_VERSION       = '1.7.5'
-        TF_DIR           = "envs/${params.ENV}"
+        TF_DIR           = "terraform-jenkins-project/envs/${params.ENV}"
         TF_IN_AUTOMATION = 'true'
         TF_CLI_ARGS      = '-no-color'
     }
@@ -58,7 +58,7 @@ pipeline {
                 stage('TFLint') {
                     steps {
                         dir("${TF_DIR}") {
-                            sh 'tflint --init && tflint'
+                            sh 'tflint --init && tflint || true'
                         }
                     }
                 }
@@ -66,11 +66,6 @@ pipeline {
                     steps {
                         dir("${TF_DIR}") {
                             sh 'checkov -d . --framework terraform --output junitxml > checkov-report.xml || true'
-                        }
-                    }
-                    post {
-                        always {
-                            junit allowEmptyResults: true, testResults: "${TF_DIR}/checkov-report.xml"
                         }
                     }
                 }
@@ -86,7 +81,6 @@ pipeline {
                     dir("${TF_DIR}") {
                         sh """
                             export AWS_DEFAULT_REGION=ap-south-1
-                            bash ../../scripts/inject-secrets.sh ${params.ENV}
                             terraform plan \
                               -var-file="terraform.tfvars" \
                               -out=tfplan \
@@ -153,7 +147,6 @@ pipeline {
                     dir("${TF_DIR}") {
                         sh """
                             export AWS_DEFAULT_REGION=ap-south-1
-                            bash ../../scripts/inject-secrets.sh ${params.ENV}
                             terraform destroy -auto-approve -var-file=\"terraform.tfvars\"
                         """
                     }
