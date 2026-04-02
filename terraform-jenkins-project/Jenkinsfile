@@ -34,9 +34,12 @@ pipeline {
                     string(credentialsId: 'Accesskey',        variable: 'AWS_ACCESS_KEY_ID'),
                     string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY')
                 ]) {
-                    sh 'echo "WORKSPACE=$WORKSPACE" && find $WORKSPACE -name main.tf | head -20'
+                    sh '''
+                        echo "WORKSPACE=$WORKSPACE"
+                        find $WORKSPACE -name main.tf 2>/dev/null | head -20
+                    '''
                     dir("${TF_DIR}") {
-                        sh 'terraform init -reconfigure'
+                        sh 'pwd && ls -la'
                     }
                 }
             }
