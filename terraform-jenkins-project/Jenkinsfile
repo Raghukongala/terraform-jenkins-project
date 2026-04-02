@@ -117,49 +117,6 @@ pipeline {
             }
         }
 
-        stage('Terraform Destroy Existing') {
-            when {
-                expression { params.ACTION == 'apply' }
-            }
-            steps {
-                withCredentials([
-                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY'),
-                    string(credentialsId: 'db-password',       variable: 'TF_VAR_db_password')
-                ]) {
-                    dir("${TF_DIR}") {
-                        sh '''
-                            export AWS_DEFAULT_REGION=ap-south-1
-                            terraform destroy -auto-approve -var-file="terraform.tfvars" || true
-                        '''
-                    }
-                }
-            }
-        }
-
-        stage('Terraform Plan After Destroy') {
-            when {
-                expression { params.ACTION == 'apply' }
-            }
-            steps {
-                withCredentials([
-                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY'),
-                    string(credentialsId: 'db-password',       variable: 'TF_VAR_db_password')
-                ]) {
-                    dir("${TF_DIR}") {
-                        sh """
-                            export AWS_DEFAULT_REGION=ap-south-1
-                            terraform plan \\
-                              -var-file="terraform.tfvars" \\
-                              -out=tfplan \\
-                              -detailed-exitcode || [ \$? -eq 2 ]
-                        """
-                    }
-                }
-            }
-        }
-
         stage('Terraform Apply') {
             when {
                 expression { params.ACTION == 'apply' }
