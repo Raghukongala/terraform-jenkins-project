@@ -75,16 +75,17 @@ pipeline {
         stage('Terraform Plan') {
             steps {
                 withCredentials([
-                    string(credentialsId: 'Accesskey',        variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY')
+                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                    string(credentialsId: 'db-password',       variable: 'TF_VAR_db_password')
                 ]) {
                     dir("${TF_DIR}") {
                         sh """
                             export AWS_DEFAULT_REGION=ap-south-1
-                            terraform plan \
-                              -var-file="terraform.tfvars" \
-                              -out=tfplan \
-                              -detailed-exitcode || true
+                            terraform plan \\
+                              -var-file="terraform.tfvars" \\
+                              -out=tfplan \\
+                              -detailed-exitcode
                         """
                         sh 'terraform show -no-color tfplan > tfplan.txt'
                         archiveArtifacts artifacts: 'tfplan.txt', fingerprint: true
@@ -122,8 +123,9 @@ pipeline {
             }
             steps {
                 withCredentials([
-                    string(credentialsId: 'Accesskey',        variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY')
+                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                    string(credentialsId: 'db-password',       variable: 'TF_VAR_db_password')
                 ]) {
                     dir("${TF_DIR}") {
                         sh '''
@@ -141,8 +143,9 @@ pipeline {
             }
             steps {
                 withCredentials([
-                    string(credentialsId: 'Accesskey',        variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY')
+                    string(credentialsId: 'Accesskey',         variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'Secret access key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                    string(credentialsId: 'db-password',       variable: 'TF_VAR_db_password')
                 ]) {
                     dir("${TF_DIR}") {
                         sh """
